@@ -1,5 +1,15 @@
 # Repository Guidelines
 
+See `README.md` for a high-level overview and usage of each installer.
+
+## Available Installers
+- `install-cursor.sh` — Install/upgrade Cursor editor (AppImage) under `$HOME` with wrapper and desktop entry.
+- `install-lm_studio.sh` — Install/upgrade LM Studio (AppImage), wrapper `lmstudio-gui`, optional `lms` CLI.
+- `install-obsidian.sh` — Install/upgrade Obsidian (AppImage) under `$HOME` with `obsidian` command.
+- `install-protonvpn.sh` — Manage Proton VPN via official apt repository (install/uninstall, channel switch).
+- `install-power-mode-auto-switch.sh` — User-level systemd service to auto-switch GNOME power profiles.
+- `install-power-mode-udev.sh` — Root-level udev rules to auto-switch GNOME power profiles.
+
 ## Project Structure & Module Organization
 - Source: Bash installer scripts live at the repo root (e.g., `install-cursor.sh`, `install-lm_studio.sh`, `install-obsidian.sh`).
 - New tools: Add as `install-<tool>.sh` in the root. Keep each script self‑contained and idempotent.
