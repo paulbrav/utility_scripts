@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CHANNEL=stable   # stable | prerelease
+CHANNEL="${CHANNEL:-stable}"   # stable | prerelease
+FORCE="${FORCE:-0}"             # 1 to force reinstall
+
+# Optional CLI flag: --force | -f
+if [[ "${1:-}" == "--force" || "${1:-}" == "-f" ]]; then
+  FORCE=1
+  shift || true
+fi
 
 # --- discover latest build -------------------------------------------------
 # Cursor has migrated to a new update backend (api2.cursor.sh). We query it
@@ -18,32 +25,61 @@ JSON=$(curl -fsSL \
        "https://api2.cursor.sh/updates/api/update/linux-x64/cursor/${CUR_VER}/${MACHINE_ID}/${CHANNEL}" \
        -H "User-Agent: CursorInstaller/1.0" || true)
 
-# Fallback to the legacy API if api2 failed for some reason.
-if [[ -z "${JSON}" || "${JSON}" == "null" ]]; then
-  JSON=$(curl -fsSL \
-         "https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=${CHANNEL}" \
-         -H "User-Agent: CursorInstaller/1.0")
-fi
-
 # Extract download URL and version, handling both response formats.
 URL=$(echo "${JSON}" | jq -r '.downloadUrl // .url' | sed 's/\.zsync$//')
 VER=$(echo "${JSON}" | jq -r '.version // .productVersion')
 
 # --- create local cursor command ---------------------------------------------
 create_cursor_command() {
-  local new_bin="$1"
-  
+  local appimage_bin="$1"
+
   # Ensure ~/.local/bin exists
   mkdir -p "$HOME/.local/bin"
-  
-  # Create symlink to new version
-  ln -sf "$new_bin" "$HOME/.local/bin/cursor"
-  echo "Created command: ~/.local/bin/cursor -> $new_bin"
-  
+
+  # Build wrapper in a temp file to avoid ETXTBUSY, then atomically replace
+  local tmp_wrapper
+  tmp_wrapper="$(mktemp)"
+
+  {
+    printf '%s\n' "#!/usr/bin/env bash" "set -Eeuo pipefail" "APPIMAGE_BIN=\"${appimage_bin}\""
+    cat <<'EOF'
+
+# Resolve relative path arguments to absolute paths so the AppImage runtime
+# (which may chdir to its mount point) does not treat "." as the AppImage dir.
+
+normalized_args=()
+for arg in "$@"; do
+  # Leave options (start with -) and URIs (contain ://) untouched
+  if [[ "$arg" == -* || "$arg" == *://* ]]; then
+    normalized_args+=("$arg")
+    continue
+  fi
+
+  # Treat as path-like if '.', '..', starts with ./ or ../, has a slash,
+  # or points to an existing file/dir. Otherwise, pass through unchanged.
+  if [[ "$arg" == "." || "$arg" == ".." || "$arg" == ./* || "$arg" == ../* || "$arg" == */* || -e "$arg" ]]; then
+    if [[ "$arg" == /* ]]; then
+      normalized_args+=("$arg")
+    else
+      normalized_args+=("$PWD/$arg")
+    fi
+  else
+    normalized_args+=("$arg")
+  fi
+done
+
+exec "$APPIMAGE_BIN" --no-sandbox -- "${normalized_args[@]}"
+EOF
+  } > "$tmp_wrapper"
+
+  chmod +x "$tmp_wrapper"
+  mv -f "$tmp_wrapper" "$HOME/.local/bin/cursor"
+  echo "Created command: ~/.local/bin/cursor -> $appimage_bin --no-sandbox (atomic replace)"
+
   # Check if ~/.local/bin is in PATH
   if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-    echo "WARNING: ~/.local/bin is not in your PATH. Add this to your shell profile:"
-    echo "     export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo 'WARNING: ~/.local/bin is not in your PATH. Add this to your shell profile:'
+    echo '     export PATH="$HOME/.local/bin:$PATH"'
   fi
 }
 
@@ -68,7 +104,7 @@ get_installed_version() {
 
 CURRENT_VER=$(get_installed_version 2>/dev/null || echo "")
 
-if [[ -n "$CURRENT_VER" && "$CURRENT_VER" == "$VER" ]]; then
+if [[ -n "$CURRENT_VER" && "$CURRENT_VER" == "$VER" && "$FORCE" != "1" ]]; then
   echo "Cursor $VER is already installed and up to date."
   # Still ensure the cursor command is available
   APPDIR="$HOME/Applications/cursor"
@@ -110,17 +146,19 @@ DESK="$HOME/.local/share/applications/cursor.desktop"
 mkdir -p "$APPDIR"
 
 echo "Downloading Cursor $VER..."
-curl -L "$URL" -o "$BIN"
+curl -fL "$URL" -o "$BIN"
 chmod +x "$BIN"
 
 echo "Fetching icon..."
 curl -fsSL "https://avatars.githubusercontent.com/u/126759922?s=256" -o "$ICON"
 
 echo "Creating desktop entry..."
+mkdir -p "$(dirname "$DESK")"
 cat >"$DESK" <<EOF
 [Desktop Entry]
 Name=Cursor
-Exec=$BIN --no-sandbox %F
+Exec=$HOME/.local/bin/cursor %U
+TryExec=$HOME/.local/bin/cursor
 Icon=$ICON
 Type=Application
 Categories=Development;Utility;
